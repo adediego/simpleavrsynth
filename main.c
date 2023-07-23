@@ -4,7 +4,7 @@
 #include <avr/pgmspace.h>
 #include <stdbool.h>
 
-#include "tables/melody.c"
+//#include "tables/melody.c"
 #include "tables/saw_tables.c"
 #include "tables/midi.c"
 
@@ -23,25 +23,14 @@
 #define DAC_NSHDN   12
 #define DAC_DATA_SH  4 
 
-volatile uint16_t osc1_acc = 0;
-volatile uint16_t osc2_acc = 0;
-volatile uint16_t osc3_acc = 0;
-volatile uint16_t osc4_acc = 0;
 
-volatile uint16_t osc1_step = 0;
-volatile uint16_t osc2_step = 0;
-volatile uint16_t osc3_step = 0;
-volatile uint16_t osc4_step = 0;
-
-volatile bool osc_on[4] = {false, false, false, false};
-volatile uint8_t osc_note[4] = {0, 0, 0, 0};
-volatile uint16_t* osc_step[4] = 
-    {&osc1_step, &osc2_step, &osc3_step, &osc4_step};
-
-volatile int table1 = 0;
-volatile int table2 = 0;
-volatile int table3 = 0;
-volatile int table4 = 0;
+#define NVOICES 6
+#define SCALEEXPONENT 3
+volatile bool osc_on[NVOICES];
+volatile uint16_t table[NVOICES];
+volatile uint8_t  osc_note[NVOICES];
+volatile uint16_t osc_step[NVOICES];
+volatile uint16_t osc_acc[NVOICES];
 
 volatile int note_count = 0;
 
@@ -50,16 +39,27 @@ volatile uint8_t midi_data_byte = 0;
 
 int select_table(uint16_t step);
 
+void init_oscillators(){
+    for (int k = 0; k<NVOICES; k++)
+    {
+        osc_note[k] = 0;
+        osc_step[k] = 0;
+        osc_acc[k] = 0;
+        table[k] = 0;
+    }
+}
+
+
 void update_oscs() {
     // update oscillator frequencies
 //   osc1_step = steps1[note_count];
 //    osc2_step = steps2[note_count];
     
     // update the lookup table for the samples
-    table1 = select_table(osc1_step);
-    table2 = select_table(osc2_step);
-    table3 = select_table(osc3_step);
-    table4 = select_table(osc4_step);
+    for (int k = 0; k< NVOICES; k++)
+    {
+        table[k] = select_table(osc_step[k]);
+    }
 }
 
 
@@ -130,33 +130,28 @@ ISR(TIMER1_COMPA_vect){
     // allow interrupt by audio timer
     sei();
 
-    note_count += 1;
-    note_count = note_count % mel_length;
+  //  note_count += 1;
+  //  note_count = note_count % mel_length;
 
-    update_oscs();
+  //  update_oscs();
 }
 
 
 // High frequency interrupt for audio output
 ISR(TIMER0_COMPA_vect){
     // increment oscillator accumulators:
-    osc1_acc += osc1_step;
-    osc2_acc += osc2_step;
-    osc3_acc += osc3_step;
-    osc4_acc += osc4_step;
-
-    int sample_k_1 = (osc1_acc >> 8 ) & 0xff;
-    int sample_k_2 = (osc2_acc >> 8 ) & 0xff;
-    int sample_k_3 = (osc3_acc >> 8 ) & 0xff;
-    int sample_k_4 = (osc4_acc >> 8 ) & 0xff;
-
-    uint16_t val1 =  pgm_read_byte(&(saw_tables[table1][sample_k_1]));
-    uint16_t val2 =  pgm_read_byte(&(saw_tables[table2][sample_k_2]));
-    uint16_t val3 =  pgm_read_byte(&(saw_tables[table3][sample_k_3]));
-    uint16_t val4 =  pgm_read_byte(&(saw_tables[table4][sample_k_4]));
-
-    uint16_t val = (val1 + val2 + val3 + val4) >> 2;
+    cli();
+    uint16_t val = 0;
+    for (int k = 0; k < NVOICES; k++)
+    {
+        osc_acc[k] += osc_step[k];
+        uint8_t sample = (osc_acc[k] >> 8 ) & 0xff;
+        val += pgm_read_byte(&(saw_tables[table[k]]
+                    [sample]));
+    }
+    val = val >> SCALEEXPONENT;
     dac_write(val & 0xff);
+    sei();
 }
 
 /*ISR(USART_RXC_vect){
@@ -200,12 +195,12 @@ ISR(USART_RX_vect){
 
 
 void note_on(uint8_t note){
-    for (int k = 0; k < 4; k++)
+    for (int k = 0; k < NVOICES; k++)
     {
         if (!osc_on[k])
         {
             osc_on[k] = true;
-            *(osc_step[k]) 
+            osc_step[k]
                 = pgm_read_word(&(midi_to_step[note]));
             osc_note[k] = note;
             update_oscs();
@@ -215,12 +210,12 @@ void note_on(uint8_t note){
 }
 
 void note_off(uint8_t note){
-    for (int k = 0; k < 4; k++)
+    for (int k = 0; k < NVOICES; k++)
     {
         if (osc_on[k] && (osc_note[k] == note))
         {
             osc_on[k] = false;
-            *(osc_step[k]) = 0; 
+            osc_step[k] = 0; 
             return;
         }
     }
@@ -259,6 +254,7 @@ void handle_message(uint8_t message){
 
 int main() {
     cli();
+    init_oscillators();
     USART_Init(15);
     setup();
     sei();
