@@ -1,0 +1,6 @@
+tables/*
+*.swp
+*.o
+*.s
+*.elf
+*.hex
