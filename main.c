@@ -38,6 +38,7 @@ volatile uint8_t midi_status = 0;
 volatile uint8_t midi_data_byte = 0;
 
 int select_table(uint16_t step);
+void handle_message(uint8_t message);
 
 void init_oscillators(){
     for (int k = 0; k<NVOICES; k++)
@@ -51,10 +52,6 @@ void init_oscillators(){
 
 
 void update_oscs() {
-    // update oscillator frequencies
-//   osc1_step = steps1[note_count];
-//    osc2_step = steps2[note_count];
-    
     // update the lookup table for the samples
     for (int k = 0; k< NVOICES; k++)
     {
@@ -63,7 +60,7 @@ void update_oscs() {
 }
 
 
-void setup_SPI()
+void init_SPI()
 {
     //set CS, MOSI and SCK to output
     SPI_DDR |= (1 << CS) | (1 << MOSI) | (1 << SCK);
@@ -103,9 +100,7 @@ void dac_write(uint8_t value)
     SPI_PORT |= (1 << CS);
 }
 
-void setup(){
-    setup_SPI();
-
+void init_timer(){
     cli();
 
     //set timer0  at 16kHz 
@@ -113,50 +108,25 @@ void setup(){
     TCCR0B |= (1 << CS01);   // 8x prescaler
     OCR0A   = 61;            // results in 16kHz
     TIMSK0 |= (1 << OCIE0A); // enable interrupt
-
-    //set timer1 at 4Hz
-    TCCR1B |= (1 << WGM12);  // CTC Mode
-    TCCR1B |= (1 << CS12);   // 256x prescaler
-    OCR1A   = 7575;          // results in 4 Hz
-    TIMSK1 |= (1 << OCIE1A); // enable interrupt
-
-    // allow interrupts
+                             //
     sei();
-    update_oscs();
-}
-
-// Low frequency interrupt for note changes
-ISR(TIMER1_COMPA_vect){
-    // allow interrupt by audio timer
-    sei();
-
-  //  note_count += 1;
-  //  note_count = note_count % mel_length;
-
-  //  update_oscs();
 }
 
 
-// High frequency interrupt for audio output
+// interrupt for audio output
 ISR(TIMER0_COMPA_vect){
     // increment oscillator accumulators:
     cli();
     uint16_t val = 0;
-    for (int k = 0; k < NVOICES; k++)
-    {
+    for (int k = 0; k < NVOICES; k++){
         osc_acc[k] += osc_step[k];
         uint8_t sample = (osc_acc[k] >> 8 ) & 0xff;
-        val += pgm_read_byte(&(saw_tables[table[k]]
-                    [sample]));
+        val += pgm_read_byte(&(saw_tables[table[k]][sample]));
     }
     val = val >> SCALEEXPONENT;
     dac_write(val & 0xff);
     sei();
 }
-
-/*ISR(USART_RXC_vect){
-    osc1_step = 2000;
-}*/
 
 // return the right lookuptable for a given frequency
 // such that there are no frequencies in the signal 
@@ -175,7 +145,7 @@ int select_table(uint16_t step)
     return table;
 }
 
-void USART_Init(unsigned int ubrr)
+void init_usart(unsigned int ubrr)
 {
     /*Set baud rate */
     UBRR0H = (unsigned char)(ubrr>>8);
@@ -200,11 +170,9 @@ void note_on(uint8_t note){
         if (!osc_on[k])
         {
             osc_on[k] = true;
-            osc_step[k]
-                = pgm_read_word(&(midi_to_step[note]));
+            osc_step[k] = pgm_read_word(&(midi_to_step[note]));
             osc_note[k] = note;
             update_oscs();
-            return;
         }
     }
 }
@@ -216,34 +184,32 @@ void note_off(uint8_t note){
         {
             osc_on[k] = false;
             osc_step[k] = 0; 
-            return;
         }
     }
 }
 
 void handle_data(uint8_t data){
-    if ((midi_status == 0x90) && (midi_data_byte == 0))
-    {
+    if ((midi_status == 0x90) && (midi_data_byte == 0)){
         if (data < 128)
             note_on(data);
-//            osc1_step = pgm_read_word(&(midi_to_step[data]));
     }
-    else
-        if (midi_status == 0x80)
+    else {
+        if (midi_status == 0x80){
             note_off(data);
-//            osc1_step = 0;
-
+        }
+    }
     midi_data_byte++;
 }
+
 void handle_message(uint8_t message){
     if ( message & (1 << 7)) // status byte?
         switch (message){
             case 0x80: // note off
-            case 0x90: // Note on 
+            case 0x90: // note on 
                 midi_status = message;
                 midi_data_byte = 0;
                 break;
-            default:
+            default:   // reset state if other message
                 midi_status = 0;
                 midi_data_byte = 0;
         }
@@ -255,8 +221,9 @@ void handle_message(uint8_t message){
 int main() {
     cli();
     init_oscillators();
-    USART_Init(15);
-    setup();
+    init_usart(15);
+    init_SPI();
+    init_timer();
     sei();
 
 
