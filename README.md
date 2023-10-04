@@ -1,16 +1,14 @@
 # Simple AVR synthesizer
 
-Play a hardcoded melody with two voices on an Atmega328P using an 8 bit DAC (MCP4901). 
+A wavetable-based synthesizer on an Atmega328P capable of basic MIDI.
 
 ## Features
    - 16kHz sample rate
    - audio signal in 8 bit fixed point precision
-   - 2 independent voices (sawtooth)
-   - low-pass filtered lookup tables for the waveform to
-     avoid aliasing. The tables are generated in Python
-     before compile time and selected at runtime based on the
-     pitch of a note.
-   - preset melody: J.S. Bach's inventio 13 in A minor
+   - sawtooth signal as low-pass filtered wavetables to avoid aliasing.
+     The tables are generated in Python before compile time and stored
+     in the flash memory. The appropriate table for some note is selected at runtime.
+   - 6 independent voices 
 
 ## Circuit diagram
 <img style="background-color:#ffffff;" src="./media/circuit.svg">
