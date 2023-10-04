@@ -5,9 +5,9 @@ A wavetable-based synthesizer on an Atmega328P capable of basic MIDI.
 ## Features
    - 16kHz sample rate
    - audio signal in 8 bit fixed point precision
-   - sawtooth signal as low-pass filtered wavetables to avoid aliasing.
-     The tables are generated in Python before compile time and stored
-     in the flash memory. The appropriate table for some note is selected at runtime.
+   - sawtooth signal stored in flash memory as low-pass filtered wavetables to avoid aliasing.
+     Tables with different filter cutoffs are generated in Python before compilation.
+     The appropriate table for some note is selected at runtime.
    - 6 independent voices 
 
 ## Circuit diagram
