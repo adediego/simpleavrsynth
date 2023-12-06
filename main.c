@@ -2,9 +2,11 @@
 #include <avr/interrupt.h>
 #include <limits.h>
 #include <avr/pgmspace.h>
+#include <stdbool.h>
 
-#include "tables/melody.c"
+//#include "tables/melody.c"
 #include "tables/saw_tables.c"
+#include "tables/midi.c"
 
 // SPI definitions
 #define SPI_DDR DDRB
@@ -21,30 +23,44 @@
 #define DAC_NSHDN   12
 #define DAC_DATA_SH  4 
 
-volatile uint16_t osc1_acc = 0;
-volatile uint16_t osc2_acc = 0;
-volatile uint16_t osc1_step = 0;
-volatile uint16_t osc2_step = 0;
 
-volatile int table1 = 0;
-volatile int table2 = 0;
+#define NVOICES 6
+#define SCALEEXPONENT 3
+volatile bool osc_on[NVOICES];
+volatile uint16_t table[NVOICES];
+volatile uint8_t  osc_note[NVOICES];
+volatile uint16_t osc_step[NVOICES];
+volatile uint16_t osc_acc[NVOICES];
 
 volatile int note_count = 0;
 
-int select_table(uint16_t step);
+volatile uint8_t midi_status = 0;
+volatile uint8_t midi_data_byte = 0;
 
-void update_oscs() {
-    // update oscillator frequencies
-    osc1_step = steps1[note_count];
-    osc2_step = steps2[note_count];
-    
-    // update the lookup table for the samples
-    table1 = select_table(osc1_step);
-    table2 = select_table(osc2_step);
+int select_table(uint16_t step);
+void handle_message(uint8_t message);
+
+void init_oscillators(){
+    for (int k = 0; k<NVOICES; k++)
+    {
+        osc_note[k] = 0;
+        osc_step[k] = 0;
+        osc_acc[k] = 0;
+        table[k] = 0;
+    }
 }
 
 
-void setup_SPI()
+void update_oscs() {
+    // update the lookup table for the samples
+    for (int k = 0; k< NVOICES; k++)
+    {
+        table[k] = select_table(osc_step[k]);
+    }
+}
+
+
+void init_SPI()
 {
     //set CS, MOSI and SCK to output
     SPI_DDR |= (1 << CS) | (1 << MOSI) | (1 << SCK);
@@ -84,9 +100,7 @@ void dac_write(uint8_t value)
     SPI_PORT |= (1 << CS);
 }
 
-void setup(){
-    setup_SPI();
-
+void init_timer(){
     cli();
 
     //set timer0  at 16kHz 
@@ -94,43 +108,24 @@ void setup(){
     TCCR0B |= (1 << CS01);   // 8x prescaler
     OCR0A   = 61;            // results in 16kHz
     TIMSK0 |= (1 << OCIE0A); // enable interrupt
-
-    //set timer1 at 4Hz
-    TCCR1B |= (1 << WGM12);  // CTC Mode
-    TCCR1B |= (1 << CS12);   // 256x prescaler
-    OCR1A   = 7575;          // results in 4 Hz
-    TIMSK1 |= (1 << OCIE1A); // enable interrupt
-
-    // allow interrupts
+                             //
     sei();
-    update_oscs();
-}
-
-// Low frequency interrupt for note changes
-ISR(TIMER1_COMPA_vect){
-    // allow interrupt by audio timer
-    sei();
-
-    note_count += 1;
-    note_count = note_count % mel_length;
-
-    update_oscs();
 }
 
 
-// High frequency interrupt for audio output
+// interrupt for audio output
 ISR(TIMER0_COMPA_vect){
     // increment oscillator accumulators:
-    osc1_acc += osc1_step;
-    osc2_acc += osc2_step;
-
-    int sample_k_1 = (osc1_acc >> 8 ) & 0xff;
-    int sample_k_2 = (osc2_acc >> 8 ) & 0xff;
-    uint16_t val1 =  pgm_read_byte(&(saw_tables[table1][sample_k_1]));
-    uint16_t val2 =  pgm_read_byte(&(saw_tables[table2][sample_k_2]));
-
-    uint16_t val = (val1 + val2) >> 1;
+    cli();
+    uint16_t val = 0;
+    for (int k = 0; k < NVOICES; k++){
+        osc_acc[k] += osc_step[k];
+        uint8_t sample = (osc_acc[k] >> 8 ) & 0xff;
+        val += pgm_read_byte(&(saw_tables[table[k]][sample]));
+    }
+    val = val >> SCALEEXPONENT;
     dac_write(val & 0xff);
+    sei();
 }
 
 // return the right lookuptable for a given frequency
@@ -150,11 +145,87 @@ int select_table(uint16_t step)
     return table;
 }
 
+void init_usart(unsigned int ubrr)
+{
+    /*Set baud rate */
+    UBRR0H = (unsigned char)(ubrr>>8);
+    UBRR0L = (unsigned char)ubrr;
+
+    // Enable receiver and interrupt 
+    UCSR0B = (1<<RXEN0) | (1<<RXCIE0); 
+
+    // Set frame format: 8data, 1stop bit 
+    UCSR0C = (3<<UCSZ00);
+
+}
+
+ISR(USART_RX_vect){
+     handle_message(UDR0);
+}
+
+
+void note_on(uint8_t note){
+    for (int k = 0; k < NVOICES; k++)
+    {
+        if (!osc_on[k])
+        {
+            osc_on[k] = true;
+            osc_step[k] = pgm_read_word(&(midi_to_step[note]));
+            osc_note[k] = note;
+            update_oscs();
+        }
+    }
+}
+
+void note_off(uint8_t note){
+    for (int k = 0; k < NVOICES; k++)
+    {
+        if (osc_on[k] && (osc_note[k] == note))
+        {
+            osc_on[k] = false;
+            osc_step[k] = 0; 
+        }
+    }
+}
+
+void handle_data(uint8_t data){
+    if ((midi_status == 0x90) && (midi_data_byte == 0)){
+        if (data < 128)
+            note_on(data);
+    }
+    else {
+        if (midi_status == 0x80){
+            note_off(data);
+        }
+    }
+    midi_data_byte++;
+}
+
+void handle_message(uint8_t message){
+    if ( message & (1 << 7)) // status byte?
+        switch (message){
+            case 0x80: // note off
+            case 0x90: // note on 
+                midi_status = message;
+                midi_data_byte = 0;
+                break;
+            default:   // reset state if other message
+                midi_status = 0;
+                midi_data_byte = 0;
+        }
+    else
+        handle_data(message);
+}
+
 
 int main() {
-    DDRB |= (1 << 0);
-    setup();
-    update_oscs();
+    cli();
+    init_oscillators();
+    init_usart(15);
+    init_SPI();
+    init_timer();
+    sei();
+
 
     while(1){
     }
