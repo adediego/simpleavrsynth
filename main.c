@@ -173,6 +173,7 @@ void note_on(uint8_t note){
             osc_step[k] = pgm_read_word(&(midi_to_step[note]));
             osc_note[k] = note;
             update_oscs();
+            return;
         }
     }
 }
@@ -184,6 +185,7 @@ void note_off(uint8_t note){
         {
             osc_on[k] = false;
             osc_step[k] = 0; 
+            return;
         }
     }
 }
